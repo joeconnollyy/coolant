@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coolant Gauge Control</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0d0d0d; color: #f0f0f0;
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 24px 16px; gap: 20px;
+  }
+  h1 { font-size: 18px; font-weight: 500; color: #888; letter-spacing: 0.06em; }
+  .card {
+    background: #1a1a1a; border: 1px solid #2a2a2a;
+    border-radius: 14px; padding: 20px;
+    width: 100%; max-width: 360px;
+  }
+  .card-title { font-size: 11px; font-weight: 500; color: #555; letter-spacing: 0.08em; margin-bottom: 14px; }
+  .status-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #888; margin-bottom: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #333; flex-shrink: 0; transition: background 0.3s; }
+  .dot.connected { background: #00c97a; }
+  .dot.error { background: #ff3c28; }
+  input[type="text"] {
+    width: 100%; background: #111; border: 1px solid #333;
+    border-radius: 8px; color: #f0f0f0; font-size: 14px;
+    padding: 10px 12px; outline: none; margin-bottom: 10px;
+  }
+  input[type="text"]:focus { border-color: #555; }
+  button {
+    width: 100%; padding: 12px; border-radius: 10px; border: none;
+    font-size: 14px; font-weight: 500; cursor: pointer; transition: opacity 0.15s;
+  }
+  button:active { opacity: 0.7; }
+  .btn-connect { background: #00c97a; color: #000; }
+  .btn-live { background: #1e3a2a; color: #00c97a; border: 1px solid #00c97a44; }
+  .temp-display {
+    font-size: 72px; font-weight: 200; text-align: center;
+    color: #f0f0f0; line-height: 1; margin: 8px 0 4px;
+  }
+  .temp-unit { font-size: 24px; color: #888; }
+  .temp-display.warm { color: #ffb400; }
+  .temp-display.hot  { color: #ff3c28; }
+  input[type="range"] { width: 100%; accent-color: #00c97a; margin: 8px 0; }
+  .range-labels { display: flex; justify-content: space-between; font-size: 11px; color: #555; margin-top: 2px; }
+  .preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .preset {
+    background: #111; border: 1px solid #2a2a2a; border-radius: 8px;
+    padding: 10px 4px; text-align: center; cursor: pointer;
+    font-size: 13px; font-weight: 500; color: #888; transition: all 0.15s;
+  }
+  .preset:hover  { border-color: #444; color: #f0f0f0; }
+  .preset.active { border-color: #00c97a; color: #00c97a; background: #0d2a1a; }
+  .preset.warm   { border-color: #ffb400; color: #ffb400; background: #2a1e00; }
+  .preset.hot    { border-color: #ff3c28; color: #ff3c28; background: #2a0d0d; }
+  .live-badge {
+    display: inline-block; background: #0d2a1a; border: 1px solid #00c97a44;
+    border-radius: 20px; padding: 3px 10px; font-size: 11px; color: #00c97a; margin-left: 8px;
+  }
+  .log { font-size: 11px; color: #444; font-family: monospace; max-height: 80px; overflow-y: auto; line-height: 1.6; }
+  .log span { display: block; }
+  .log .ok  { color: #00c97a; }
+  .log .err { color: #ff3c28; }
+  .log .inf { color: #666; }
+</style>
+</head>
+<body>
+<h1>COOLANT GAUGE CONTROL</h1>
+
+<div class="card">
+  <div class="card-title">MQTT CONNECTION</div>
+  <div class="status-row">
+    <div class="dot" id="dot"></div>
+    <span id="status-text">Disconnected</span>
+  </div>
+  <input type="text" id="client-id" placeholder="Client ID from sketch (e.g. coolant_gauge_abc123)" />
+  <button class="btn-connect" id="btn-connect" onclick="toggleConnect()">Connect</button>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    TEMPERATURE OVERRIDE
+    <span class="live-badge" id="mode-badge" style="display:none">LIVE</span>
+  </div>
+  <div class="temp-display" id="temp-display">
+    <span id="temp-val">40</span><span class="temp-unit">°C</span>
+  </div>
+  <input type="range" id="temp-slider" min="0" max="120" value="40" oninput="onSlider(this.value)">
+  <div class="range-labels"><span>0°C</span><span>40°C</span><span>80°C</span><span>120°C</span></div>
+  <div style="height:14px"></div>
+  <div class="preset-grid">
+    <div class="preset" onclick="setTemp(20)">20°C<br><span style="font-size:10px;color:#555">cold</span></div>
+    <div class="preset" onclick="setTemp(60)">60°C<br><span style="font-size:10px;color:#555">warm</span></div>
+    <div class="preset" onclick="setTemp(90)">90°C<br><span style="font-size:10px;color:#555">normal</span></div>
+    <div class="preset" onclick="setTemp(110)">110°C<br><span style="font-size:10px;color:#555">alert</span></div>
+  </div>
+  <div style="height:14px"></div>
+  <button class="btn-live" onclick="sendLive()">Return to live thermistor</button>
+</div>
+
+<div class="card">
+  <div class="card-title">LIVE READING FROM ESP32</div>
+  <div class="status-row">
+    <span id="live-temp" style="font-size:22px;font-weight:500;">--</span>
+    <span style="color:#555;font-size:14px;margin-left:4px;">°C  (published every 5s)</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">LOG</div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+let client = null;
+let connected = false;
+const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
+
+function log(msg, type) {
+  type = type || 'inf';
+  const el = document.getElementById('log');
+  const line = document.createElement('span');
+  line.className = type;
+  line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  el.prepend(line);
+  while (el.children.length > 20) el.removeChild(el.lastChild);
+}
+
+function setDot(state) {
+  const dot = document.getElementById('dot');
+  dot.className = 'dot' + (state === 'ok' ? ' connected' : state === 'err' ? ' error' : '');
+}
+
+function toggleConnect() {
+  if (connected) { client.end(); return; }
+  const id = document.getElementById('client-id').value.trim();
+  if (!id) { log('Enter the Client ID from your ESP32 sketch', 'err'); return; }
+  log('Connecting to HiveMQ...', 'inf');
+  setDot('');
+  client = mqtt.connect(BROKER_WS, {
+    clientId: 'webctrl_' + Math.random().toString(16).substr(2, 6),
+    clean: true
+  });
+  client.on('connect', function() {
+    connected = true;
+    document.getElementById('status-text').textContent = 'Connected';
+    document.getElementById('btn-connect').textContent = 'Disconnect';
+    document.getElementById('btn-connect').style.background = '#2a1a1a';
+    document.getElementById('btn-connect').style.color = '#ff3c28';
+    setDot('ok');
+    log('Connected', 'ok');
+    client.subscribe('coolant/temp/status', function() { log('Subscribed to live readings', 'ok'); });
+  });
+  client.on('message', function(topic, payload) {
+    if (topic === 'coolant/temp/status') {
+      document.getElementById('live-temp').textContent = payload.toString();
+      log('Live: ' + payload.toString() + 'C', 'inf');
+    }
+  });
+  client.on('error', function(err) { log('Error: ' + err.message, 'err'); setDot('err'); });
+  client.on('close', function() {
+    connected = false;
+    document.getElementById('status-text').textContent = 'Disconnected';
+    document.getElementById('btn-connect').textContent = 'Connect';
+    document.getElementById('btn-connect').style.background = '#00c97a';
+    document.getElementById('btn-connect').style.color = '#000';
+    setDot('err');
+    log('Disconnected', 'err');
+  });
+}
+
+function publishTemp(val) {
+  if (!connected) { log('Not connected', 'err'); return; }
+  client.publish('coolant/temp/set', String(val));
+  log('Sent ' + val + 'C', 'ok');
+  updateDisplay(val);
+  document.getElementById('mode-badge').style.display = 'none';
+}
+
+function onSlider(val) { publishTemp(parseInt(val)); }
+function setTemp(val) { document.getElementById('temp-slider').value = val; publishTemp(val); }
+
+function sendLive() {
+  if (!connected) { log('Not connected', 'err'); return; }
+  client.publish('coolant/temp/set', 'live');
+  log('Returned to live thermistor', 'ok');
+  document.getElementById('mode-badge').style.display = 'inline-block';
+}
+
+function updateDisplay(val) {
+  val = parseInt(val);
+  const el = document.getElementById('temp-display');
+  document.getElementById('temp-val').textContent = val;
+  el.className = 'temp-display' + (val >= 105 ? ' hot' : val >= 80 ? ' warm' : '');
+  document.getElementById('temp-slider').value = val;
+  document.querySelectorAll('.preset').forEach(function(p) {
+    const pv = parseInt(p.textContent);
+    p.className = 'preset' + (pv === val ? (val >= 105 ? ' hot' : val >= 80 ? ' warm' : ' active') : '');
+  });
+}
+</script>
+</body>
+</html>
